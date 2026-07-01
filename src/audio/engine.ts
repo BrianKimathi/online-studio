@@ -2,6 +2,7 @@ import * as Tone from 'tone';
 import { DrumSynthEngine } from './drumSynth';
 import { DrumPadId, Note, MixerChannel } from '../types';
 import { DrumKitId, Eight08Variant } from './drumKitPresets';
+import { InstrumentPresetId, createInstrumentSynth } from './instrumentPresets';
 
 class AudioEngineClass {
   private initialized = false;
@@ -10,6 +11,11 @@ class AudioEngineClass {
   public drumSynth: DrumSynthEngine | null = null;
   private customPlayers: Map<DrumPadId, Tone.Player> = new Map();
   private polySynth: Tone.PolySynth | null = null;
+  // Per-instrument-track dedicated synths (FL Studio style: each track owns
+  // its own voice so piano, guitar, 808, etc. can play simultaneously).
+  private instrumentSynths: Map<string, Tone.PolySynth | Tone.Sampler> = new Map();
+  private instrumentPresetIds: Map<string, InstrumentPresetId> = new Map();
+  private instrumentSampleUrls: Map<string, string> = new Map();
 
   public getContextState() {
     return Tone.context ? Tone.context.state : 'not-created';
@@ -514,6 +520,94 @@ class AudioEngineClass {
     }
   }
 
+  // ── Per-instrument track synths ─────────────────────────────────────
+  /** Ensure a dedicated synth exists for the given instrument track.
+   *  If sampleUrl is provided, a pitched Tone.Sampler is built from the
+   *  sample so imported 808s (etc.) can be played from the piano roll. */
+  public async ensureInstrumentSynth(
+    trackId: string,
+    presetId: InstrumentPresetId,
+    sampleUrl?: string
+  ): Promise<void> {
+    await this.init();
+    const synthEq = this.eqs.get('synth');
+    if (!synthEq) return;
+
+    const existing = this.instrumentSynths.get(trackId);
+    const existingPreset = this.instrumentPresetIds.get(trackId);
+    const existingSample = this.instrumentSampleUrls.get(trackId);
+
+    const sampleChanged = sampleUrl !== existingSample;
+    const presetChanged = existingPreset !== presetId;
+
+    if (existing && !sampleChanged && !presetChanged) return;
+    // If only preset changed but track is sample-based, keep the sampler.
+    if (existing && presetChanged && !sampleChanged && existingSample) {
+      this.instrumentPresetIds.set(trackId, presetId);
+      return;
+    }
+
+    if (existing) {
+      try { existing.disconnect(); existing.dispose(); } catch { /* noop */ }
+    }
+
+    if (sampleUrl) {
+      // Build a pitched sampler from the imported sample, mapped to C2 so
+      // piano-roll notes transpose it across the keyboard.
+      const sampler = new Tone.Sampler({
+        urls: { C2: sampleUrl },
+        release: 1.2,
+        volume: -6,
+      }).connect(synthEq);
+      this.instrumentSynths.set(trackId, sampler);
+      this.instrumentSampleUrls.set(trackId, sampleUrl);
+    } else {
+      const synth = createInstrumentSynth(presetId, synthEq);
+      this.instrumentSynths.set(trackId, synth);
+      this.instrumentSampleUrls.delete(trackId);
+    }
+    this.instrumentPresetIds.set(trackId, presetId);
+  }
+
+  /** Remove a track's synth when the track is deleted. */
+  public disposeInstrumentSynth(trackId: string): void {
+    const synth = this.instrumentSynths.get(trackId);
+    if (synth) {
+      try { synth.disconnect(); synth.dispose(); } catch { /* noop */ }
+    }
+    this.instrumentSynths.delete(trackId);
+    this.instrumentPresetIds.delete(trackId);
+    this.instrumentSampleUrls.delete(trackId);
+  }
+
+  /** Preview a note on a specific instrument track. */
+  public playInstrumentNote(trackId: string, pitch: string, duration: string | number, time?: number, velocity: number = 0.8) {
+    const synth = this.instrumentSynths.get(trackId);
+    if (synth) {
+      synth.triggerAttackRelease(pitch, duration, time, velocity);
+    } else {
+      // Fall back to the global polySynth if the track synth isn't ready yet.
+      this.playSynthNote(pitch, duration, time, velocity);
+    }
+  }
+
+  /** Set a track's volume (0..1). */
+  public setInstrumentVolume(trackId: string, volume: number) {
+    const synth = this.instrumentSynths.get(trackId);
+    if (synth) {
+      const db = 20 * Math.log10(volume || 0.0001);
+      synth.volume.setValueAtTime(db, Tone.now());
+    }
+  }
+
+  /** Mute/unmute a track's synth. */
+  public setInstrumentMute(trackId: string, mute: boolean) {
+    const synth = this.instrumentSynths.get(trackId);
+    if (synth) {
+      synth.volume.setValueAtTime(mute ? -Infinity : 0, Tone.now());
+    }
+  }
+
   // Register custom sample Blob URL for a drum pad
   public setCustomSample(padId: DrumPadId, blobUrl: string) {
     // Dispose previous player if any
@@ -532,6 +626,15 @@ class AudioEngineClass {
       player.connect(drumsEq);
     }
     this.customPlayers.set(padId, player);
+  }
+
+  /** Remove a custom sample from a pad, reverting it to the synth voice. */
+  public clearCustomSample(padId: DrumPadId) {
+    const oldPlayer = this.customPlayers.get(padId);
+    if (oldPlayer) {
+      try { oldPlayer.dispose(); } catch { /* noop */ }
+    }
+    this.customPlayers.delete(padId);
   }
 
   // Update Mixer Channel controls
@@ -893,6 +996,9 @@ class AudioEngineClass {
           // Play piano roll melody notes starting at this time offset
           this.playPianoRollNotesAtTime(time, step, stepCount);
 
+          // Play every instrument track's pattern (piano, guitar, 808, etc.)
+          this.playInstrumentTracksAtTime(time, step, stepCount);
+
           this.activeStep++;
         }
       }
@@ -938,6 +1044,39 @@ class AudioEngineClass {
         this.playSynthNote(pitch, duration, time + (note.time - timeOffsetInLoop), velocity);
       }
     });
+  }
+
+  // Play every instrument track's notes that fall on the current grid step.
+  // Each track uses its own dedicated synth voice (piano, guitar, 808, ...).
+  private playInstrumentTracksAtTime(time: number, stepIndex: number, totalSteps: number) {
+    const instrumentsStore = (window as any)._instrumentsStore;
+    const transportStore = (window as any)._transportStore;
+    if (!instrumentsStore || !transportStore) return;
+
+    const { tracks } = instrumentsStore.getState();
+    const { loopLength } = transportStore.getState();
+
+    const ticksPerStep = Tone.Time('16n').toSeconds();
+    const currentStepInLoop = stepIndex % (loopLength * 16);
+    const timeOffsetInLoop = currentStepInLoop * ticksPerStep;
+    const nextStepTime = timeOffsetInLoop + ticksPerStep;
+
+    for (const track of tracks) {
+      if (track.mute) continue;
+      const synth = this.instrumentSynths.get(track.id);
+      if (!synth) continue;
+      const voice = synth as Tone.PolySynth;
+      for (const note of track.notes) {
+        if (note.time >= timeOffsetInLoop && note.time < nextStepTime) {
+          (voice as any).triggerAttackRelease(
+            note.pitch,
+            note.duration,
+            time + (note.time - timeOffsetInLoop),
+            note.velocity
+          );
+        }
+      }
+    }
   }
 
   // Audio Recording (Vocals / Mixdown)

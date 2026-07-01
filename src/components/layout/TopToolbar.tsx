@@ -121,6 +121,9 @@ export const TopToolbar: React.FC = () => {
         <div className="h-8 w-8 rounded-lg bg-gradient-to-tr from-indigo-500 to-violet-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
           <Activity className="h-4 w-4 text-white animate-pulse" />
         </div>
+        <span className="text-sm font-extrabold tracking-tight text-white hidden sm:inline">
+          Online<span className="text-indigo-400">Studio</span>
+        </span>
         <div className="flex items-center gap-2">
           <input
             type="text"

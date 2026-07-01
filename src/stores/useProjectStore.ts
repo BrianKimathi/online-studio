@@ -44,7 +44,7 @@ const getSavedList = (): ProjectListItem[] => {
 
 export const useProjectStore = create<ProjectState>((set, get) => ({
   currentProjectId: 'default-proj',
-  projectName: 'Cybernetic Beats',
+  projectName: 'Untitled Project',
   projectList: getSavedList(),
   undoStack: [],
   redoStack: [],

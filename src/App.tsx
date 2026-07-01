@@ -1,11 +1,27 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AppShell } from './components/layout/AppShell';
 import { useTransportStore } from './stores/useTransportStore';
 import { useProjectStore } from './stores/useProjectStore';
 import { useRecordingStore } from './stores/useRecordingStore';
 import { AudioEngine } from './audio/engine';
+import { Monitor, Smartphone } from 'lucide-react';
+
+function useIsMobile() {
+  const [mobile, setMobile] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia('(max-width: 768px)').matches || /Mobi|Android|iPhone|iPod/i.test(navigator.userAgent);
+  });
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 768px)');
+    const handler = (e: MediaQueryListEvent) => setMobile(e.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
+  return mobile;
+}
 
 export default function App() {
+  const isMobile = useIsMobile();
   const { isPlaying, setPlaying, isRecording, setRecording, metronome, setMetronome } = useTransportStore();
   const { undo, redo, saveProject } = useProjectStore();
   const { micEnabled, setMicEnabled, recordingMode, addTake } = useRecordingStore();
@@ -103,6 +119,23 @@ export default function App() {
     window.addEventListener('keydown', handleGlobalShortcuts);
     return () => window.removeEventListener('keydown', handleGlobalShortcuts);
   }, [isPlaying, isRecording, metronome, micEnabled, recordingMode, undo, redo, saveProject, addTake]);
+
+  if (isMobile) {
+    return (
+      <div className="fixed inset-0 flex flex-col items-center justify-center bg-[#070b13] text-center p-8 select-none">
+        <div className="h-16 w-16 rounded-2xl bg-gradient-to-tr from-indigo-500 to-violet-600 flex items-center justify-center shadow-lg shadow-indigo-500/20 mb-5">
+          <Smartphone className="h-8 w-8 text-white" />
+        </div>
+        <h1 className="text-lg font-extrabold text-white mb-2">
+          Open on a PC for a better experience
+        </h1>
+        <p className="text-sm text-slate-400 max-w-xs flex items-center gap-1.5 justify-center">
+          <Monitor className="h-4 w-4 shrink-0" />
+          OnlineStudio is designed for desktop. Please switch to a computer.
+        </p>
+      </div>
+    );
+  }
 
   return <AppShell />;
 }

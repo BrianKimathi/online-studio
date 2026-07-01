@@ -11,6 +11,7 @@ import { useSequencerStore } from '../../stores/useSequencerStore';
 import { usePianoRollStore } from '../../stores/usePianoRollStore';
 import { useMixerStore } from '../../stores/useMixerStore';
 import { useRecordingStore } from '../../stores/useRecordingStore';
+import { useInstrumentsStore } from '../../stores/useInstrumentsStore';
 import { AudioEngine } from '../../audio/engine';
 
 export const AppShell: React.FC = () => {
@@ -25,12 +26,19 @@ export const AppShell: React.FC = () => {
     (window as any)._mixerStore = useMixerStore;
     (window as any)._recordingStore = useRecordingStore;
     (window as any)._projectStore = useProjectStore;
+    (window as any)._instrumentsStore = useInstrumentsStore;
   }, []);
 
   // Initialize audio engine on first click
   useEffect(() => {
     const handleGesture = async () => {
       await AudioEngine.init();
+      // Ensure every existing instrument track has a dedicated synth voice
+      // so patterns play back even before their piano-roll window is opened.
+      const { tracks } = useInstrumentsStore.getState();
+      for (const t of tracks) {
+        await AudioEngine.ensureInstrumentSynth(t.id, t.presetId, t.sampleUrl);
+      }
       window.removeEventListener('click', handleGesture);
       window.removeEventListener('keydown', handleGesture);
     };
